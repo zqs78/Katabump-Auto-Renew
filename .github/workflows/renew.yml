@@ -1,1 +1,65 @@
+name: Katabump Auto Renew
 
+on:
+  schedule:
+    # 每天 UTC 0点 (北京时间 8点) 运行
+    - cron: '0 0 * * *'
+  workflow_dispatch: # 允许手动触发
+
+# 安全加固：显式声明 GITHUB_TOKEN 的最小权限。
+# 本工作流只需要向仓库推送 keepalive commit，其余权限一律不给，
+# 避免默认 token 权限过大（例如某些仓库设置下默认拥有更多写权限）。
+permissions:
+  contents: write
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    
+    steps:
+    - uses: actions/checkout@v5
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v5
+      with:
+        node-version: '20'
+        
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y xvfb
+        npm install
+        npx playwright install-deps chrome
+      
+    - name: Run Renew Script
+      env:
+        # 将 USERS_JSON 配置在 GitHub Repository Secrets 中
+        # 格式: [{"username": "xxx", "password": "xxx"}, ...]
+        USERS_JSON: ${{ secrets.USERS_JSON }}
+        HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
+        TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+        TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+      # 使用 xvfb-run 模拟有头环境运行
+      run: xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" node action_renew.js
+
+    - name: Upload Screenshots
+      if: always()
+      uses: actions/upload-artifact@v5
+      with:
+        name: screenshots
+        path: screenshots/
+        # 安全加固：截图里包含账号仪表盘信息（脱敏后的用户名/服务器状态），
+        # 默认 artifact 保留 90 天暴露面过大，这里缩短为 3 天。
+        # 强烈建议：本仓库务必设为 Private，否则任何人都能下载这些截图。
+        retention-days: 3
+        
+    - name: Keepalive
+      run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          date -u > .keepalive
+          git add .keepalive
+          git commit -m "chore: keepalive $(date -u +%Y-%m-%d)"
+          git push
